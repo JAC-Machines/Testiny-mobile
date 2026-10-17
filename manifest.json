@@ -1,6 +1,7 @@
 {
-  "name": "Test runner for Testiny",
-  "short_name": "Test runner",
+  "name": "Exécution de tests Testiny",
+  "short_name": "Tests",
+  "lang": "fr",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
