@@ -138,27 +138,88 @@ function setHeader(title, backHash) {
   $back.onclick = backHash ? () => { location.hash = backHash; } : null;
 }
 
-function richText(v) {
-  if (v == null || v === "") return "";
-  if (typeof v === "string") {
-    const s = v.trim();
-    if (s.startsWith("{") || s.startsWith("[")) {
-      try { return walk(JSON.parse(s)).replace(/\n{3,}/g, "\n\n").trim(); } catch {}
-    }
-    return s.replace(/^<!--\s*markdown\s*-->\s*/i, "");
-  }
-  return walk(v).trim();
+function parseJson(v) {
+  if (v && typeof v === "object") return v;
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  if (!s.startsWith("{") && !s.startsWith("[")) return null;
+  try { return JSON.parse(s); } catch { return null; }
 }
 
-function walk(n) {
+function kidsOf(n) { return n?.children ?? n?.content ?? n?.c ?? []; }
+
+function hasText(n) {
+  if (n == null) return false;
+  if (typeof n === "string") return n.trim() !== "";
+  if (Array.isArray(n)) return n.some(hasText);
+  if (typeof n.text === "string") return n.text.trim() !== "";
+  return hasText(kidsOf(n));
+}
+
+function leaf(n) {
+  let h = esc(n.text);
+  if (n.code) h = `<code>${h}</code>`;
+  if (n.bold) h = `<strong>${h}</strong>`;
+  if (n.italic) h = `<em>${h}</em>`;
+  if (n.underline) h = `<u>${h}</u>`;
+  if (n.strikethrough) h = `<s>${h}</s>`;
+  return h;
+}
+
+function node(n) {
   if (n == null) return "";
-  if (typeof n === "string" || typeof n === "number") return String(n);
-  if (Array.isArray(n)) return n.map(walk).join("");
-  if (typeof n.text === "string") return n.text;
-  const kids = n.content ?? n.children ?? n.nodes;
-  if (!kids) return Object.values(n).filter((x) => typeof x === "object").map(walk).join("\n");
-  const block = /paragraph|heading|list|item|step|row|block/i.test(n.type || "");
-  return walk(kids) + (block ? "\n" : "");
+  if (typeof n === "string") return esc(n);
+  if (Array.isArray(n)) return n.map(node).join("");
+  if (typeof n.text === "string") return leaf(n);
+  const kids = kidsOf(n);
+  const type = String(n.t ?? n.type ?? "").toLowerCase();
+  switch (type) {
+    case "p": case "paragraph":
+      return hasText(kids) ? `<p>${node(kids)}</p>` : "";
+    case "ul": case "ol":
+      return hasText(kids) ? `<${type}>${node(kids)}</${type}>` : "";
+    case "li": case "list-item": case "list_item":
+      return `<li>${node(kids)}</li>`;
+    case "h1": case "h2": case "h3": case "h4": case "h5": case "h6": case "heading":
+      return hasText(kids) ? `<h4>${node(kids)}</h4>` : "";
+    case "a": case "link": {
+      const url = n.url ?? n.href ?? "";
+      return /^https?:\/\//i.test(url) ? `<a href="${esc(url)}" target="_blank" rel="noopener">${node(kids)}</a>` : node(kids);
+    }
+    case "code": case "pre": case "code_block": case "code-block":
+      return `<pre>${node(kids)}</pre>`;
+    case "blockquote": case "quote":
+      return `<blockquote>${node(kids)}</blockquote>`;
+    case "t": case "table":
+      return table(n, kids);
+    default:
+      return node(kids);
+  }
+}
+
+function table(n, rows) {
+  const cols = n.columns ?? Math.max(0, ...rows.map((r) => kidsOf(r).length));
+  if (cols === 2) {
+    return `<ol class="steps">${rows.map((r, i) => {
+      if (!hasText(r)) return "";
+      const [act, exp] = kidsOf(r);
+      const expHtml = hasText(exp) ? `<div class="exp"><span class="exp-label">${t("expected")}</span>${node(kidsOf(exp))}</div>` : "";
+      return `<li data-n="${i + 1}"><div class="act">${node(kidsOf(act))}</div>${expHtml}</li>`;
+    }).join("")}</ol>`;
+  }
+  return `<div class="tbl"><table>${rows.filter(hasText).map((r) =>
+    `<tr>${kidsOf(r).map((c) => `<td>${node(kidsOf(c))}</td>`).join("")}</tr>`).join("")}</table></div>`;
+}
+
+function richHtml(v) {
+  if (v == null || v === "") return "";
+  const doc = parseJson(v);
+  if (doc) {
+    const nodes = doc.t === "slate" ? doc.c : Array.isArray(doc) ? doc : kidsOf(doc).length ? kidsOf(doc) : [doc];
+    return hasText(nodes) ? node(nodes) : "";
+  }
+  const txt = String(v).trim().replace(/^<!--\s*markdown\s*-->\s*/i, "");
+  return txt ? `<div class="plain">${esc(txt)}</div>` : "";
 }
 
 function caseSections(tc) {
@@ -166,14 +227,14 @@ function caseSections(tc) {
   const out = [];
   for (const [k, label] of TEXT_FIELDS) {
     seen.add(k);
-    const txt = richText(tc[k]);
-    if (txt) out.push([t(label), txt]);
+    const html = richHtml(tc[k]);
+    if (html) out.push([t(label), html]);
   }
   for (const [k, v] of Object.entries(tc)) {
     if (seen.has(k) || k.startsWith("$") || k.startsWith("_") || !v) continue;
     if (/(_text|scenarios|steps)$/i.test(k)) {
-      const txt = richText(v);
-      if (txt) out.push([k, txt]);
+      const html = richHtml(v);
+      if (html) out.push([k, html]);
     }
   }
   return out;
@@ -374,7 +435,7 @@ async function viewCase(runId, caseId) {
   $view.innerHTML = `
     <h2>${esc(tc.title)}</h2>
     <p class="muted">${t("caseMeta", { id: tc.id, status: t(initial) })}${commentsInfo}</p>
-    ${sections.length ? sections.map(([h, txt]) => `<div class="section"><h3>${esc(h)}</h3><div class="text">${esc(txt)}</div></div>`).join("")
+    ${sections.length ? sections.map(([h, html]) => `<div class="section"><h3>${esc(h)}</h3><div class="text rich">${html}</div></div>`).join("")
       : `<p class="muted">${t("noSteps")}</p>`}
     <details class="raw"><summary>${t("rawData")}</summary><pre>${esc(JSON.stringify(tc, null, 2))}</pre></details>
     <div class="section">
