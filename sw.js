@@ -1,4 +1,4 @@
-const CACHE = "test-runner-v5";
+const CACHE = "test-runner-v8";
 const SHELL = ["./", "./index.html", "./app.js", "./i18n.js", "./styles.css", "./manifest.json", "./icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {

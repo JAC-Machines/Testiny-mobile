@@ -10,11 +10,14 @@ const TEXT_FIELDS = [
 ];
 const MAX_PHOTO_PX = 1600;
 const JPEG_QUALITY = 0.8;
+const ACCEPT = "image/*,application/pdf,text/plain,.txt,.log,.csv";
+const RESIZABLE = /^image\/(jpeg|png|webp|heic|heif)$/i;
 
 const $view = document.getElementById("view");
 const $title = document.getElementById("title");
 const $back = document.getElementById("back");
 const $settings = document.getElementById("settings");
+const $refresh = document.getElementById("refresh");
 const $lang = document.getElementById("lang");
 const $langCode = document.getElementById("langCode");
 const $toast = document.getElementById("toast");
@@ -55,6 +58,7 @@ function applyChrome() {
   $lang.setAttribute("aria-label", t("language"));
   $back.setAttribute("aria-label", t("back"));
   $settings.setAttribute("aria-label", t("settings"));
+  $refresh.setAttribute("aria-label", t("refresh"));
 }
 
 $lang.innerHTML = Object.entries(LANGS).map(([c, n]) => `<option value="${c}">${n}</option>`).join("");
@@ -66,6 +70,7 @@ $lang.onchange = () => {
 };
 
 const cache = { runCases: new Map() };
+let nav = 0;
 
 class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -116,8 +121,9 @@ const T = {
     });
   },
   upload: (runId, caseId, blob, filename) => {
-    const q = new URLSearchParams({ title: filename, filename, mime_type: blob.type });
-    return api(`/testrun/upload-attachment/${runId}/${caseId}?${q}`, { blob });
+    const type = blob.type || "application/octet-stream";
+    const q = new URLSearchParams({ title: filename, filename, mime_type: type });
+    return api(`/testrun/upload-attachment/${runId}/${caseId}?${q}`, { blob, contentType: type });
   },
 };
 
@@ -132,8 +138,9 @@ function toast(msg, ms = 2500) {
   toast.t = setTimeout(() => $toast.classList.remove("show"), ms);
 }
 
-function setHeader(title, backHash) {
+function setHeader(title, backHash, refreshable = false) {
   $title.textContent = title;
+  $refresh.hidden = !refreshable;
   $back.hidden = !backHash;
   $back.onclick = backHash ? () => { location.hash = backHash; } : null;
 }
@@ -277,7 +284,9 @@ async function viewSettings() {
     $msg.innerHTML = "";
     $projects.innerHTML = `<p class="muted">${t("loadingProjects")}</p>`;
     try {
+      const my = nav;
       const projects = (await T.projects()).data || [];
+      if (my !== nav) return;
       if (!projects.length) { $projects.innerHTML = `<p class="muted">${t("noProjects")}</p>`; return; }
       $projects.innerHTML = `
         <label class="field"><span>${t("project")}</span>
@@ -289,6 +298,7 @@ async function viewSettings() {
         location.hash = "#/runs";
       };
     } catch (e) {
+      if (!$projects.isConnected) return;
       $projects.innerHTML = "";
       $msg.innerHTML = errorBox(e);
     }
@@ -298,12 +308,14 @@ async function viewSettings() {
   if (cfg.key) loadProjects();
 }
 
-async function viewRuns() {
-  setHeader(t("runsTitle"), null);
+async function viewRuns(opts = {}) {
+  const my = nav;
+  setHeader(t("runsTitle"), null, true);
   $view.className = "";
-  loading();
+  if (!opts.soft) loading();
   try {
     const runs = (await T.runs(cfg.project)).data || [];
+    if (my !== nav) return;
     const showClosed = read("tr.showClosed") === "1";
     const isClosed = (r) => r.is_closed === true || !!r.closed_at;
     const visible = runs.filter((r) => showClosed || !isClosed(r));
@@ -319,24 +331,26 @@ async function viewRuns() {
         : `<p class="empty">${t("noRuns")}</p>`}`;
     $view.querySelector("#closed").onchange = (e) => { write("tr.showClosed", e.target.checked ? "1" : ""); viewRuns(); };
   } catch (e) {
-    $view.innerHTML = errorBox(e);
+    if (my === nav) $view.innerHTML = errorBox(e);
   }
 }
 
-async function viewRun(runId) {
-  setHeader(t("runN", { id: runId }), "#/runs");
+async function viewRun(runId, opts = {}) {
+  const my = nav;
+  if (!opts.soft) setHeader(t("runN", { id: runId }), "#/runs", true);
   $view.className = "";
-  loading();
+  if (!opts.soft) loading();
   let run, cases;
   try {
     const [r, res] = await Promise.all([T.run(runId), T.runCases(cfg.project, runId)]);
+    if (my !== nav) return;
     run = r;
     cases = res.data || [];
   } catch (e) {
-    $view.innerHTML = errorBox(e);
+    if (my === nav) $view.innerHTML = errorBox(e);
     return;
   }
-  setHeader(run.title || t("runN", { id: runId }), "#/runs");
+  setHeader(run.title || t("runN", { id: runId }), "#/runs", true);
 
   if (!cases.length) {
     cache.runCases.set(String(runId), []);
@@ -413,28 +427,31 @@ async function viewRun(runId) {
 }
 
 async function viewCase(runId, caseId) {
+  const my = nav;
   setHeader(t("caseTitle"), `#/run/${runId}`);
   $view.className = "has-bar";
   loading();
   let tc;
   try {
     tc = (await T.caseInRun(cfg.project, runId, caseId)).data?.[0];
+    if (my !== nav) return;
     if (!tc) throw new ApiError(404, t("caseNotFound"));
   } catch (e) {
+    if (my !== nav) return;
     $view.className = "";
     $view.innerHTML = errorBox(e);
     return;
   }
 
-  const initial = resultOf(tc);
-  const state = { status: initial === "NOTRUN" ? null : initial, photos: [], saving: false };
+  let initial = resultOf(tc);
+  const state = { status: initial === "NOTRUN" ? null : initial, files: [], saving: false };
   const sections = caseSections(tc);
   const nComments = tc.testrun_testcase_values?.$comment_count;
   const commentsInfo = nComments ? `, ${t(nComments > 1 ? "commentMany" : "commentOne", { n: nComments })}` : "";
 
   $view.innerHTML = `
     <h2>${esc(tc.title)}</h2>
-    <p class="muted">${t("caseMeta", { id: tc.id, status: t(initial) })}${commentsInfo}</p>
+    <p class="muted" id="meta">${t("caseMeta", { id: tc.id, status: t(initial) })}${commentsInfo}</p>
     ${sections.length ? sections.map(([h, html]) => `<div class="section"><h3>${esc(h)}</h3><div class="text rich">${html}</div></div>`).join("")
       : `<p class="muted">${t("noSteps")}</p>`}
     <details class="raw"><summary>${t("rawData")}</summary><pre>${esc(JSON.stringify(tc, null, 2))}</pre></details>
@@ -443,20 +460,20 @@ async function viewCase(runId, caseId) {
       <textarea id="comment" placeholder="${esc(t("commentPlaceholder"))}"></textarea>
     </div>
     <div class="section">
-      <h3>${t("photos")}</h3>
+      <h3>${t("attachments")}</h3>
       <div class="photo-actions">
-        <button class="btn" id="cam">
+        <button class="btn accent" id="cam">
           <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
           ${t("takePhoto")}
         </button>
-        <button class="btn" id="gal">
-          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 16l5-5 5 5 3-3 5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
-          ${t("fromGallery")}
+        <button class="btn" id="addFile">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 3h8l4 4v14H6z M14 3v4h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          ${t("addFile")}
         </button>
       </div>
       <div class="photos" id="photos"></div>
       <input type="file" id="camInput" accept="image/*" capture="environment" hidden>
-      <input type="file" id="galInput" accept="image/*" multiple hidden>
+      <input type="file" id="fileInput" accept="${ACCEPT}" multiple hidden>
     </div>
     <div class="bar"><div class="bar-inner">
       <div class="statuses" role="group" aria-label="${esc(t("result"))}">
@@ -469,16 +486,17 @@ async function viewCase(runId, caseId) {
     </div></div>`;
 
   const $photos = $view.querySelector("#photos");
-  const $camInput = $view.querySelector("#camInput");
-  const $galInput = $view.querySelector("#galInput");
+  const $fileInput = $view.querySelector("#fileInput");
   const $comment = $view.querySelector("#comment");
 
   function renderPhotos() {
-    $photos.innerHTML = state.photos.map((p, i) => `
-      <div class="photo"><img src="${p.url}" alt="Photo ${i + 1}"><button data-i="${i}" aria-label="${esc(t("removePhoto", { n: i + 1 }))}">×</button></div>`).join("");
+    $photos.innerHTML = state.files.map((f, i) => `
+      <div class="photo">${f.url ? `<img src="${f.url}" alt="${esc(f.name)}">` : `<div class="file"><svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path d="M6 3h8l4 4v14H6z M14 3v4h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>${esc(f.name)}</span></div>`}
+        <button data-i="${i}" aria-label="${esc(t("removeAttachment", { n: i + 1 }))}">×</button></div>`).join("")
+;
     $photos.querySelectorAll(".photo button").forEach((b) => b.onclick = () => {
-      const [p] = state.photos.splice(+b.dataset.i, 1);
-      URL.revokeObjectURL(p.url);
+      const [f] = state.files.splice(+b.dataset.i, 1);
+      if (f.url) URL.revokeObjectURL(f.url);
       renderPhotos();
     });
   }
@@ -486,21 +504,26 @@ async function viewCase(runId, caseId) {
 
   async function addFiles(input) {
     for (const f of input.files) {
-      try {
-        const blob = await downscale(f);
-        state.photos.push({ blob, url: URL.createObjectURL(blob) });
-      } catch {
-        toast(t("imgReadError"));
+      if (RESIZABLE.test(f.type)) {
+        try {
+          const blob = await downscale(f);
+          state.files.push({ blob, name: null, url: URL.createObjectURL(blob) });
+        } catch {
+          toast(t("imgReadError"));
+        }
+      } else {
+        state.files.push({ blob: f, name: f.name, url: f.type.startsWith("image/") ? URL.createObjectURL(f) : null });
       }
     }
     input.value = "";
     renderPhotos();
   }
 
+  const $camInput = $view.querySelector("#camInput");
   $view.querySelector("#cam").onclick = () => $camInput.click();
-  $view.querySelector("#gal").onclick = () => $galInput.click();
+  $view.querySelector("#addFile").onclick = () => $fileInput.click();
   $camInput.onchange = () => addFiles($camInput);
-  $galInput.onchange = () => addFiles($galInput);
+  $fileInput.onchange = () => addFiles($fileInput);
 
   $view.querySelectorAll(".status").forEach((b) => b.onclick = () => {
     state.status = state.status === b.dataset.s ? null : b.dataset.s;
@@ -514,7 +537,7 @@ async function viewCase(runId, caseId) {
     if (state.saving) return;
     const comment = $comment.value.trim();
     const statusChanged = state.status && state.status !== initial;
-    if (!statusChanged && !comment && !state.photos.length) {
+    if (!statusChanged && !comment && !state.files.length) {
       if (goNext) return gotoNext(runId, caseId);
       toast(t("nothingToSave"));
       return;
@@ -522,14 +545,36 @@ async function viewCase(runId, caseId) {
     state.saving = true;
     $save.disabled = $next.disabled = true;
     try {
-      if (statusChanged) { toast(t("savingResult"), 10000); await T.setStatus(runId, caseId, state.status); }
+      if (statusChanged) {
+        toast(t("checking"), 10000);
+        const fresh = (await T.caseInRun(cfg.project, runId, caseId)).data?.[0];
+        const current = fresh ? resultOf(fresh) : initial;
+        if (current !== initial && current !== state.status) {
+          $toast.classList.remove("show");
+          if (!confirm(t("conflict", { current: plain(t(current)), mine: plain(t(state.status)) }))) {
+            initial = current;
+            state.status = current === "NOTRUN" ? null : current;
+            $view.querySelector("#meta").textContent = t("caseMeta", { id: tc.id, status: plain(t(current)) }) + commentsInfo;
+            $view.querySelectorAll(".status").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.s === state.status)));
+            toast(t("conflictKept"), 5000);
+            state.saving = false;
+            $save.disabled = $next.disabled = false;
+            return;
+          }
+        }
+        if (current !== state.status) {
+          toast(t("savingResult"), 10000);
+          await T.setStatus(runId, caseId, state.status);
+        }
+      }
       if (comment) { toast(t("savingComment"), 10000); await T.addComment(cfg.project, runId, caseId, comment); }
       const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      for (let i = 0; i < state.photos.length; i++) {
-        toast(t("uploadingPhoto", { i: i + 1, n: state.photos.length }), 30000);
-        await T.upload(runId, caseId, state.photos[i].blob, `photo-${stamp}-${i + 1}.jpg`);
+      for (let i = 0; i < state.files.length; i++) {
+        const f = state.files[i];
+        toast(t("uploadingFile", { i: i + 1, n: state.files.length }), 30000);
+        await T.upload(runId, caseId, f.blob, f.name || `photo-${stamp}-${i + 1}.jpg`);
       }
-      state.photos.forEach((p) => URL.revokeObjectURL(p.url));
+      state.files.forEach((f) => f.url && URL.revokeObjectURL(f.url));
       toast(t("saved"));
       if (goNext) gotoNext(runId, caseId);
       else location.hash = `#/run/${runId}`;
@@ -568,20 +613,37 @@ async function downscale(file) {
   return new Promise((resolve, reject) => canvas.toBlob((b) => b ? resolve(b) : reject(new Error("encode")), "image/jpeg", JPEG_QUALITY));
 }
 
-function route() {
-  window.scrollTo(0, 0);
+function plain(s) { return s.replace(/\u00ad/g, ""); }
+
+function route(opts = {}) {
+  nav++;
+  if (!opts.soft) window.scrollTo(0, 0);
   if (!cfg.key || !cfg.project) return viewSettings();
   const parts = location.hash.replace(/^#\/?/, "").split("/");
   switch (parts[0]) {
     case "settings": return viewSettings();
-    case "run": return viewRun(parts[1]);
+    case "run": return viewRun(parts[1], opts);
     case "case": return viewCase(parts[1], parts[2]);
-    default: return viewRuns();
+    default: return viewRuns(opts);
+  }
+}
+
+async function refresh() {
+  if ($refresh.classList.contains("spin")) return;
+  const y = window.scrollY;
+  $refresh.classList.add("spin");
+  try {
+    await route({ soft: true });
+    window.scrollTo(0, y);
+    toast(t("refreshed"), 1500);
+  } finally {
+    $refresh.classList.remove("spin");
   }
 }
 
 $settings.onclick = () => { location.hash = "#/settings"; };
-window.addEventListener("hashchange", route);
+$refresh.onclick = refresh;
+window.addEventListener("hashchange", () => route());
 applyChrome();
 route();
 

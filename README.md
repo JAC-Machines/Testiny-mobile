@@ -53,9 +53,15 @@ The settings stay saved on the device. They can be changed at any time with the 
 1. Pick a test run. Closed runs are hidden unless *Show closed runs* is checked.
 2. The run view shows the progress and the status of each test case. Use the status chips (*Not run*, *Failed*…) and the *Assigned to* selector to narrow the list; both filters are remembered on the device. Tap a test case to open it.
 3. Read the preconditions, steps and expected result.
-4. Optionally write a comment, and add photos with **Take photo** (camera) or **Gallery** (existing images). Photos are resized to 1600 px max before upload.
+4. Optionally write a comment, and add attachments: **Take photo** opens the camera directly, **Add file** picks existing photos or PDF, text, log and CSV files. Photos are resized to 1600 px max before upload; other files are uploaded as-is.
 5. Select a result: Passed, Failed, Blocked or Skipped.
 6. Tap **Save** to return to the run, or **Save and next** to go straight to the next test case in the filtered list.
+
+### Working with several testers
+
+The app does not update live. Results saved by others appear when a screen is opened, or with the **refresh** button (↻) in the top bar of the runs list and run views.
+
+Before saving a result, the app checks whether someone else changed the status of that test case since you opened it. If so, it asks before overwriting. If you cancel, nothing is saved: the current status is shown, and your comment and attachments are kept so you can save again.
 
 ### Language
 
@@ -109,3 +115,13 @@ See the [Testiny REST API documentation](https://www.testiny.io/docs/api-quickst
 - **Steps are not displayed:** open the test case and expand *Raw data (diagnostics)* at the bottom to see which field holds the steps.
 - **Closed runs still appear in the list:** closed runs are detected with the `is_closed` or `closed_at` fields. Check the field name in a `/testrun/find` response.
 - **The app does not update after a push:** close and reopen it. If needed, bump `CACHE` in `sw.js` to force a refresh.
+
+## License and disclaimer
+
+This project is released under the [MIT License](LICENSE). You are free to fork it and adapt it to your needs.
+
+The software is provided “as is”, without warranty of any kind. S.A. JAC N.V. does not guarantee that it works correctly or fits any particular purpose, and may change its behavior or limit or discontinue the availability of this repository and its hosted version at any time, without notice.
+
+This project is not affiliated with or endorsed by Testiny.
+
+This project was developed with the assistance of Claude, an AI model by Anthropic, and tested by S.A. JAC N.V. on its Testiny projects.
